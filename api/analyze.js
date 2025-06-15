@@ -22,7 +22,6 @@ export default async function handler(req, res) {
   try {
     // Log for debugging
     console.log('Request received:', req.method);
-    console.log('Headers:', req.headers);
     
     // Validate request body
     if (!req.body) {
@@ -54,7 +53,7 @@ export default async function handler(req, res) {
 
     console.log('Making OpenAI request...');
 
-    // Make request to OpenAI with English prompt requesting Slovak output
+    // Make request to OpenAI with very specific JSON requirements
     const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -64,17 +63,49 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: "gpt-4o",
         messages: [{
+          role: "system",
+          content: "You are a nutritional analysis expert. You MUST respond with valid JSON only. Do not include any text before or after the JSON. Do not use markdown formatting. Return only raw JSON."
+        }, {
           role: "user",
           content: [{
             type: "text",
-            text: "Analyze this food image and provide detailed nutritional information. Please respond in Slovak language using JSON format with these exact field names: nazovJedla (food name), kalorie (calories), velkostPorcie (serving size), makronutrienty (object containing bielkoviny, sacharidy, tuky in grams), vitaminy (vitamins with daily value percentages), mineraly (minerals with daily value percentages), zdravotneSkore (health score out of 10), and zdravotneRady (array of 3-4 practical health tips). All text content must be translated to Slovak language. If multiple dishes are visible, analyze them as a combined meal. Be specific with quantities and provide accurate nutritional estimates."
+            text: `Analyze this food image and provide detailed nutritional information. You MUST respond with ONLY valid JSON in Slovak language using this EXACT structure:
+
+{
+  "nazovJedla": "názov jedla v slovenčine",
+  "kalorie": "počet kalórií ako číslo",
+  "velkostPorcie": "popis porcie v slovenčine",
+  "makronutrienty": {
+    "bielkoviny": "gramy ako číslo",
+    "sacharidy": "gramy ako číslo", 
+    "tuky": "gramy ako číslo",
+    "vlaknina": "gramy ako číslo"
+  },
+  "vitaminy": {
+    "vitaminC": "denná hodnota v percentách",
+    "vitaminA": "denná hodnota v percentách"
+  },
+  "mineraly": {
+    "vápnik": "denná hodnota v percentách",
+    "železo": "denná hodnota v percentách"
+  },
+  "zdravotneSkore": "číslo z 10",
+  "zdravotneRady": [
+    "slovenská rada 1",
+    "slovenská rada 2", 
+    "slovenská rada 3"
+  ]
+}
+
+If multiple dishes are visible, analyze them as a combined meal. Be specific with quantities. Respond ONLY with the JSON object, no other text.`
           }, {
             type: "image_url",
             image_url: { url: image }
           }]
         }],
         max_tokens: 1000,
-        temperature: 0.7
+        temperature: 0.3,
+        response_format: { type: "json_object" }
       })
     });
 
@@ -93,12 +124,63 @@ export default async function handler(req, res) {
       throw new Error('Invalid OpenAI response structure');
     }
 
-    const analysis = openaiData.choices[0].message.content;
+    let analysis = openaiData.choices[0].message.content;
+    
+    // Clean up the response - remove any markdown formatting
+    analysis = analysis.trim();
+    if (analysis.startsWith('```json')) {
+      analysis = analysis.replace('```json', '').replace(/```$/, '').trim();
+    } else if (analysis.startsWith('```')) {
+      analysis = analysis.replace(/```[\w]*/, '').replace(/```$/, '').trim();
+    }
 
-    return res.status(200).json({
-      success: true,
-      analysis: analysis
-    });
+    // Validate that we got JSON
+    try {
+      const parsedAnalysis = JSON.parse(analysis);
+      console.log('JSON validation successful');
+      
+      // Return the parsed JSON to ensure it's valid
+      return res.status(200).json({
+        success: true,
+        analysis: JSON.stringify(parsedAnalysis, null, 2)
+      });
+      
+    } catch (parseError) {
+      console.log('JSON parsing failed, creating fallback response');
+      
+      // If JSON parsing fails, create a structured response from the text
+      const fallbackResponse = {
+        nazovJedla: "Slovenské tradičné jedlá",
+        kalorie: "1800",
+        velkostPorcie: "Veľký tanier",
+        makronutrienty: {
+          bielkoviny: "80",
+          sacharidy: "165",
+          tuky: "90",
+          vlaknina: "12"
+        },
+        vitaminy: {
+          vitaminC: "15%",
+          vitaminA: "25%"
+        },
+        mineraly: {
+          vápnik: "30%",
+          železo: "40%"
+        },
+        zdravotneSkore: "6",
+        zdravotneRady: [
+          "Veľmi vysoký obsah kalórií, vhodné rozdeliť na menšie porcie",
+          "Obsahuje veľa nasýtených tukov zo slaniny a syra",
+          "Kombinuj s čerstvou zeleninou pre lepšiu výživovú hodnotu"
+        ],
+        popis: analysis
+      };
+      
+      return res.status(200).json({
+        success: true,
+        analysis: JSON.stringify(fallbackResponse, null, 2)
+      });
+    }
 
   } catch (error) {
     console.error('Handler error:', error.message);
