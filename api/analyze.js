@@ -48,38 +48,51 @@ export default async function handler(req, res) {
     // Prepare the prompt based on whether it's a correction or initial analysis
     let promptText;
     
-    if (correction && correctionText) {
-      promptText = `CORRECTION REQUEST: The user says the food identification was wrong. User correction: "${correctionText}"
+    if (correction && correctionText && previousAnalysis) {
+      promptText = `PARTIAL CORRECTION REQUEST: The user wants to correct only specific parts of the food analysis. 
 
-Please re-analyze this food image based on the user's correction and provide updated nutritional information. You MUST respond with ONLY valid JSON in Slovak language using this EXACT structure:
+PREVIOUS ANALYSIS:
+${JSON.stringify(previousAnalysis, null, 2)}
+
+USER CORRECTION: "${correctionText}"
+
+INSTRUCTIONS:
+1. Look at the previous analysis and the user's correction
+2. Only modify the parts that the user specifically mentioned as wrong
+3. Keep all other nutritional values, portions, and details that were not mentioned in the correction
+4. If the user corrects the food name/type, adjust ONLY the calories and macronutrients that would change due to that specific food item
+5. Keep vegetables, sides, and other correctly identified items unchanged
+6. Provide updated nutritional information only for the corrected item and recalculate totals
+
+You MUST respond with ONLY valid JSON in Slovak language using this EXACT structure:
 
 {
-  "nazovJedla": "corrected food name in Slovak",
-  "kalorie": "calories as number",
-  "velkostPorcie": "serving size description in Slovak",
+  "nazovJedla": "updated food name incorporating the correction",
+  "kalorie": "adjusted calories based on correction",
+  "velkostPorcie": "keep or slightly adjust serving size",
   "makronutrienty": {
-    "bielkoviny": "grams as number",
-    "sacharidy": "grams as number", 
-    "tuky": "grams as number",
-    "vlaknina": "grams as number"
+    "bielkoviny": "adjusted protein based on correction",
+    "sacharidy": "adjusted carbs based on correction", 
+    "tuky": "adjusted fat based on correction",
+    "vlaknina": "adjusted fiber based on correction"
   },
   "vitaminy": {
-    "vitaminC": "daily value percentage",
-    "vitaminA": "daily value percentage"
+    "vitaminC": "keep or adjust based on correction",
+    "vitaminA": "keep or adjust based on correction"
   },
   "mineraly": {
-    "vápnik": "daily value percentage",
-    "železo": "daily value percentage"
+    "vápnik": "keep or adjust based on correction",
+    "železo": "keep or adjust based on correction"
   },
-  "zdravotneSkore": "number out of 10",
+  "zdravotneSkore": "recalculated health score",
   "zdravotneRady": [
-    "Slovak health tip 1",
-    "Slovak health tip 2", 
-    "Slovak health tip 3"
+    "updated Slovak health tip 1 if relevant to correction",
+    "updated Slovak health tip 2 if relevant to correction", 
+    "updated Slovak health tip 3 if relevant to correction"
   ]
 }
 
-Take the user's correction seriously and provide accurate nutritional data for the corrected food identification.`;
+Make minimal changes - only what the user specifically corrected. Keep everything else as accurate as possible from the previous analysis.`;
     } else {
       promptText = `Analyze this food image and provide detailed nutritional information. You MUST respond with ONLY valid JSON in Slovak language using this EXACT structure:
 
@@ -122,7 +135,7 @@ If multiple dishes are visible, analyze them as a combined meal. Be specific wit
         model: "gpt-4o",
         messages: [{
           role: "system",
-          content: "You are a nutritional analysis expert. You MUST respond with valid JSON only. Do not include any text before or after the JSON. Do not use markdown formatting. Return only raw JSON."
+          content: "You are a nutritional analysis expert specializing in partial corrections. When given a correction request, you modify only the specific parts mentioned by the user while preserving all other accurate information. You MUST respond with valid JSON only."
         }, {
           role: "user",
           content: [{
@@ -134,7 +147,7 @@ If multiple dishes are visible, analyze them as a combined meal. Be specific wit
           }]
         }],
         max_tokens: 1000,
-        temperature: 0.3,
+        temperature: 0.2, // Lower temperature for more consistent partial corrections
         response_format: { type: "json_object" }
       })
     });
@@ -177,8 +190,27 @@ If multiple dishes are visible, analyze them as a combined meal. Be specific wit
     } catch (parseError) {
       console.log('JSON parsing failed, creating fallback response');
       
+      // If it's a correction and we have previous analysis, try to preserve it
+      if (correction && previousAnalysis) {
+        const fallbackResponse = {
+          ...previousAnalysis,
+          nazovJedla: `${previousAnalysis.nazovJedla} (opravené)`,
+          zdravotneRady: [
+            "Analýza bola čiastočne opravená",
+            "Niektoré hodnoty môžu byť nepresné",
+            "Skús opraviť znova s presnejším popisom"
+          ]
+        };
+        
+        return res.status(200).json({
+          success: true,
+          analysis: JSON.stringify(fallbackResponse, null, 2)
+        });
+      }
+      
+      // Standard fallback for initial analysis
       const fallbackResponse = {
-        nazovJedla: correction ? "Opravené jedlo" : "Slovenské tradičné jedlá",
+        nazovJedla: "Slovenské tradičné jedlá",
         kalorie: "1800",
         velkostPorcie: "Veľký tanier",
         makronutrienty: {
@@ -200,8 +232,7 @@ If multiple dishes are visible, analyze them as a combined meal. Be specific wit
           "Veľmi vysoký obsah kalórií, vhodné rozdeliť na menšie porcie",
           "Obsahuje veľa nasýtených tukov zo slaniny a syra",
           "Kombinuj s čerstvou zeleninou pre lepšiu výživovú hodnotu"
-        ],
-        popis: analysis
+        ]
       };
       
       return res.status(200).json({
