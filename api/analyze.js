@@ -5,13 +5,11 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
   res.setHeader('Access-Control-Allow-Credentials', 'false');
   
-  // Handle preflight OPTIONS request
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
   }
 
-  // Only allow POST requests for the actual API
   if (req.method !== 'POST') {
     return res.status(405).json({ 
       error: 'Method not allowed',
@@ -20,31 +18,25 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Log for debugging
     console.log('Request received:', req.method);
     
-    // Validate request body
     if (!req.body) {
-      console.log('No request body');
       return res.status(400).json({
         success: false,
         error: 'No request body provided'
       });
     }
 
-    const { image } = req.body;
+    const { image, correction, correctionText, previousAnalysis } = req.body;
     
     if (!image) {
-      console.log('No image in request body');
       return res.status(400).json({ 
         success: false, 
         error: 'No image provided' 
       });
     }
 
-    // Check API key
     if (!process.env.OPENAI_API_KEY) {
-      console.log('No API key found');
       return res.status(500).json({
         success: false,
         error: 'Server configuration error - no API key'
@@ -53,7 +45,73 @@ export default async function handler(req, res) {
 
     console.log('Making OpenAI request...');
 
-    // Make request to OpenAI with very specific JSON requirements
+    // Prepare the prompt based on whether it's a correction or initial analysis
+    let promptText;
+    
+    if (correction && correctionText) {
+      promptText = `CORRECTION REQUEST: The user says the food identification was wrong. User correction: "${correctionText}"
+
+Please re-analyze this food image based on the user's correction and provide updated nutritional information. You MUST respond with ONLY valid JSON in Slovak language using this EXACT structure:
+
+{
+  "nazovJedla": "corrected food name in Slovak",
+  "kalorie": "calories as number",
+  "velkostPorcie": "serving size description in Slovak",
+  "makronutrienty": {
+    "bielkoviny": "grams as number",
+    "sacharidy": "grams as number", 
+    "tuky": "grams as number",
+    "vlaknina": "grams as number"
+  },
+  "vitaminy": {
+    "vitaminC": "daily value percentage",
+    "vitaminA": "daily value percentage"
+  },
+  "mineraly": {
+    "vápnik": "daily value percentage",
+    "železo": "daily value percentage"
+  },
+  "zdravotneSkore": "number out of 10",
+  "zdravotneRady": [
+    "Slovak health tip 1",
+    "Slovak health tip 2", 
+    "Slovak health tip 3"
+  ]
+}
+
+Take the user's correction seriously and provide accurate nutritional data for the corrected food identification.`;
+    } else {
+      promptText = `Analyze this food image and provide detailed nutritional information. You MUST respond with ONLY valid JSON in Slovak language using this EXACT structure:
+
+{
+  "nazovJedla": "food name in Slovak",
+  "kalorie": "calories as number",
+  "velkostPorcie": "serving size description in Slovak",
+  "makronutrienty": {
+    "bielkoviny": "grams as number",
+    "sacharidy": "grams as number", 
+    "tuky": "grams as number",
+    "vlaknina": "grams as number"
+  },
+  "vitaminy": {
+    "vitaminC": "daily value percentage",
+    "vitaminA": "daily value percentage"
+  },
+  "mineraly": {
+    "vápnik": "daily value percentage",
+    "železo": "daily value percentage"
+  },
+  "zdravotneSkore": "number out of 10",
+  "zdravotneRady": [
+    "Slovak health tip 1",
+    "Slovak health tip 2", 
+    "Slovak health tip 3"
+  ]
+}
+
+If multiple dishes are visible, analyze them as a combined meal. Be specific with quantities. Respond ONLY with the JSON object, no other text.`;
+    }
+
     const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -69,35 +127,7 @@ export default async function handler(req, res) {
           role: "user",
           content: [{
             type: "text",
-            text: `Analyze this food image and provide detailed nutritional information. You MUST respond with ONLY valid JSON in Slovak language using this EXACT structure:
-
-{
-  "nazovJedla": "názov jedla v slovenčine",
-  "kalorie": "počet kalórií ako číslo",
-  "velkostPorcie": "popis porcie v slovenčine",
-  "makronutrienty": {
-    "bielkoviny": "gramy ako číslo",
-    "sacharidy": "gramy ako číslo", 
-    "tuky": "gramy ako číslo",
-    "vlaknina": "gramy ako číslo"
-  },
-  "vitaminy": {
-    "vitaminC": "denná hodnota v percentách",
-    "vitaminA": "denná hodnota v percentách"
-  },
-  "mineraly": {
-    "vápnik": "denná hodnota v percentách",
-    "železo": "denná hodnota v percentách"
-  },
-  "zdravotneSkore": "číslo z 10",
-  "zdravotneRady": [
-    "slovenská rada 1",
-    "slovenská rada 2", 
-    "slovenská rada 3"
-  ]
-}
-
-If multiple dishes are visible, analyze them as a combined meal. Be specific with quantities. Respond ONLY with the JSON object, no other text.`
+            text: promptText
           }, {
             type: "image_url",
             image_url: { url: image }
@@ -126,7 +156,7 @@ If multiple dishes are visible, analyze them as a combined meal. Be specific wit
 
     let analysis = openaiData.choices[0].message.content;
     
-    // Clean up the response - remove any markdown formatting
+    // Clean up the response
     analysis = analysis.trim();
     if (analysis.startsWith('```json')) {
       analysis = analysis.replace('```json', '').replace(/```$/, '').trim();
@@ -134,12 +164,11 @@ If multiple dishes are visible, analyze them as a combined meal. Be specific wit
       analysis = analysis.replace(/```[\w]*/, '').replace(/```$/, '').trim();
     }
 
-    // Validate that we got JSON
+    // Validate JSON
     try {
       const parsedAnalysis = JSON.parse(analysis);
       console.log('JSON validation successful');
       
-      // Return the parsed JSON to ensure it's valid
       return res.status(200).json({
         success: true,
         analysis: JSON.stringify(parsedAnalysis, null, 2)
@@ -148,9 +177,8 @@ If multiple dishes are visible, analyze them as a combined meal. Be specific wit
     } catch (parseError) {
       console.log('JSON parsing failed, creating fallback response');
       
-      // If JSON parsing fails, create a structured response from the text
       const fallbackResponse = {
-        nazovJedla: "Slovenské tradičné jedlá",
+        nazovJedla: correction ? "Opravené jedlo" : "Slovenské tradičné jedlá",
         kalorie: "1800",
         velkostPorcie: "Veľký tanier",
         makronutrienty: {
@@ -184,7 +212,6 @@ If multiple dishes are visible, analyze them as a combined meal. Be specific wit
 
   } catch (error) {
     console.error('Handler error:', error.message);
-    console.error('Full error:', error);
     
     return res.status(500).json({
       success: false,
